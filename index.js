@@ -4,10 +4,20 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Client } = require('pg');
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+app.use(limiter);
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -58,25 +68,29 @@ const verifyJWT = (req, res, next) => {
   });
 };
 
-app.get('/items', verifyJWT, async (req, res) => {
-  const items = await db.query('SELECT * FROM items');
-  res.json(items.rows);
-});
-
-app.get('/items/:id', verifyJWT, async (req, res) => {
-  const { id } = req.params;
-  const item = await db.query('SELECT * FROM items WHERE id = $1', [id]);
+app.get('/getItems/:uid', verifyJWT, async (req, res) => {
+  const { uid } = req.params;
+  const item = await db.query('SELECT * FROM items WHERE uid = $1', [uid]);
   if (item.rows.length === 0)
-    return res.status(404).json({ message: 'Item not found' });
+    return res.status(404).json({ message: 'No items found for this user' });
   res.json(item.rows[0]);
 });
 
-app.post('/items', verifyJWT, async (req, res) => {
+app.get('/getItems/:uid', verifyJWT, async (req, res) => {
+  const { uid } = req.params;
+  const item = await db.query('SELECT * FROM items WHERE uid = $1', [uid]);
+  if (item.rows.length === 0)
+    return res.status(404).json({ message: 'No items found for this user' });
+  res.json(item.rows[0]);
+});
+
+app.post('/createItem/:uid', verifyJWT, async (req, res) => {
+  const { uid } = req.params;
   const { name, price, quantity } = req.body;
   try {
     await db.query(
-      'INSERT INTO items (name, price, quantity) VALUES ($1, $2, $3)',
-      [name, price, quantity]
+      'INSERT INTO items (name, price, quantity, uid) VALUES ($1, $2, $3, $4)',
+      [name, price, quantity, uid]
     );
     res.status(201).json({ message: 'Item created successfully' });
   } catch (err) {
@@ -84,13 +98,13 @@ app.post('/items', verifyJWT, async (req, res) => {
   }
 });
 
-app.put('/items/:id', verifyJWT, async (req, res) => {
-  const { id } = req.params;
+app.put('/updateItem/:id/:uid', verifyJWT, async (req, res) => {
+  const { uid, id } = req.params;
   const { name, price, quantity } = req.body;
   try {
     await db.query(
-      'UPDATE items SET name = $1, price = $2, quantity = $3 WHERE id = $4',
-      [name, price, quantity, id]
+      'UPDATE items SET name = $1, price = $2, quantity = $3 WHERE id = $4 AND uid = $5',
+      [name, price, quantity, id, uid]
     );
     res.status(200).json({ message: 'Item updated successfully' });
   } catch (err) {
@@ -98,22 +112,61 @@ app.put('/items/:id', verifyJWT, async (req, res) => {
   }
 });
 
-app.delete('/items/:id', verifyJWT, async (req, res) => {
-  const { id } = req.params;
+app.delete('/deleteItem/:id/:uid', verifyJWT, async (req, res) => {
+  const { uid } = req.params;
   try {
-    await db.query('DELETE FROM items WHERE id = $1', [id]);
+    await db.query('DELETE FROM items WHERE id = $1 AND uid = $2', [id, uid]);
     res.json({ message: 'Item deleted successfully' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-app.listen(process.env.PORT, () => {
+app.listen(process.env.PORT, async () => {
   console.log(`Server listening on port ${process.env.PORT}`);
-  db.connect().then(() =>
-    console.log(
-      `Connected to database: inventory running on PORT ${process.env.PGPORT}`
-    )
-  );
-  // run migration to create tables
+  db.connect();
+
+  const createUserTableQuery = `
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password TEXT NOT NULL
+      );
+    `;
+
+  const createItemTableQuery = `
+    CREATE TABLE items (
+      id SERIAL PRIMARY KEY,
+      uid INT NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      price DECIMAL(10,2) NOT NULL,
+      quantity INT NOT NULL,
+      FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
+  );`;
+
+  const tableExistsQuery = `
+    SELECT tablename, EXISTS (
+      SELECT 1 FROM pg_tables 
+      WHERE schemaname = 'public' AND tablename = ANY($1)
+    ) AS exists
+    FROM (VALUES ('users'), ('items')) AS t(tablename);
+  `;
+
+  const res = await db.query(tableExistsQuery, [['users', 'items', 'orders']]);
+  if (!res.rows[0].exists && !res.rows[1].exists) {
+    db.query(createUserTableQuery)
+      .then(() => {
+        console.log('Users table created');
+        return db.query(createItemTableQuery);
+      })
+      .then(() => {
+        console.log('Items table created');
+      })
+      .catch((error) => {
+        console.error('Error creating tables:', error);
+      });
+  } else {
+    console.log('Tables already exist');
+  }
 });
