@@ -5,11 +5,6 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Client } = require('pg');
 const rateLimit = require('express-rate-limit');
-const {
-  createUserTableQuery,
-  createItemTableQuery,
-  tableExistsQuery,
-} = require('./db.js');
 
 // ip-based rate limit
 const limiter = rateLimit({
@@ -131,7 +126,7 @@ app.put('/updateItem/:id/:uid', verifyJWT, async (req, res) => {
 
 // DELETE Endpoint to delete an item by id
 app.delete('/deleteItem/:id/:uid', verifyJWT, async (req, res) => {
-  const { uid } = req.params;
+  const { id, uid } = req.params;
   try {
     await db.query('DELETE FROM items WHERE id = $1 AND uid = $2', [id, uid]);
     res.json({ message: 'Item deleted successfully' });
@@ -144,9 +139,38 @@ app.listen(process.env.PORT, async () => {
   console.log(`Server listening on port ${process.env.PORT}`);
   db.connect();
 
-  const res = await db.query(tableExistsQuery, [['users', 'items', 'orders']]);
+  // SQL query to create users table
+  const createUserTableQuery = ` 
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password TEXT NOT NULL
+      );
+    `;
+
+  // SQL query to create items table
+  const createItemTableQuery = `
+    CREATE TABLE items (
+      id SERIAL PRIMARY KEY,
+      uid INT NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      price DECIMAL(10,2) NOT NULL,
+      quantity INT NOT NULL,
+      FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
+  );`;
+
+  // SQL query to check if tables exist
+  const tableExistsQuery = `
+    SELECT tablename, EXISTS (
+      SELECT 1 FROM pg_tables 
+      WHERE schemaname = 'public' AND tablename = ANY($1)
+    ) AS exists
+    FROM (VALUES ('users'), ('items')) AS t(tablename);
+  `;
+
+  const res = await db.query(tableExistsQuery, [['users', 'items']]);
   if (!res.rows[0].exists && !res.rows[1].exists) {
-    // check if tables exist
     db.query(createUserTableQuery)
       .then(() => {
         console.log('Users table created');
