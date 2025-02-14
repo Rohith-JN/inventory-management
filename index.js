@@ -5,7 +5,13 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Client } = require('pg');
 const rateLimit = require('express-rate-limit');
+const {
+  createUserTableQuery,
+  createItemTableQuery,
+  tableExistsQuery,
+} = require('./db.js');
 
+// ip-based rate limit
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -21,6 +27,7 @@ app.use(limiter);
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
+// New postgres instance
 const db = new Client({
   user: process.env.PGUSER,
   host: 'database',
@@ -29,6 +36,7 @@ const db = new Client({
   port: process.env.PGPORT,
 });
 
+// Signup Endpoint
 app.post('/signup', async (req, res) => {
   const { username, email, password } = req.body;
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -43,6 +51,7 @@ app.post('/signup', async (req, res) => {
   }
 });
 
+// Login Endpoint
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   const user = await db.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -57,6 +66,7 @@ app.post('/login', async (req, res) => {
   res.json({ token });
 });
 
+// Middleware to verify JWT token
 const verifyJWT = (req, res, next) => {
   const token = req.headers['authorization'];
   if (!token) return res.status(403).json({ message: 'No token provided' });
@@ -68,6 +78,7 @@ const verifyJWT = (req, res, next) => {
   });
 };
 
+// GET Endpoint to get all items of a user using uid
 app.get('/getItems/:uid', verifyJWT, async (req, res) => {
   const { uid } = req.params;
   const item = await db.query('SELECT * FROM items WHERE uid = $1', [uid]);
@@ -76,14 +87,19 @@ app.get('/getItems/:uid', verifyJWT, async (req, res) => {
   res.json(item.rows[0]);
 });
 
-app.get('/getItems/:uid', verifyJWT, async (req, res) => {
-  const { uid } = req.params;
-  const item = await db.query('SELECT * FROM items WHERE uid = $1', [uid]);
+// GET Endpoint to get a specific item by id of a user using uid
+app.get('/getItem/:id/:uid', verifyJWT, async (req, res) => {
+  const { id, uid } = req.params;
+  const item = await db.query(
+    'SELECT * FROM items WHERE id = $1 AND uid = $2',
+    [id, uid]
+  );
   if (item.rows.length === 0)
-    return res.status(404).json({ message: 'No items found for this user' });
+    return res.status(404).json({ message: 'Item not found' });
   res.json(item.rows[0]);
 });
 
+// POST Endpoint to create a new item
 app.post('/createItem/:uid', verifyJWT, async (req, res) => {
   const { uid } = req.params;
   const { name, price, quantity } = req.body;
@@ -98,6 +114,7 @@ app.post('/createItem/:uid', verifyJWT, async (req, res) => {
   }
 });
 
+// PUT Endpoint to update an item by id
 app.put('/updateItem/:id/:uid', verifyJWT, async (req, res) => {
   const { uid, id } = req.params;
   const { name, price, quantity } = req.body;
@@ -112,6 +129,7 @@ app.put('/updateItem/:id/:uid', verifyJWT, async (req, res) => {
   }
 });
 
+// DELETE Endpoint to delete an item by id
 app.delete('/deleteItem/:id/:uid', verifyJWT, async (req, res) => {
   const { uid } = req.params;
   try {
@@ -126,35 +144,9 @@ app.listen(process.env.PORT, async () => {
   console.log(`Server listening on port ${process.env.PORT}`);
   db.connect();
 
-  const createUserTableQuery = `
-      CREATE TABLE users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        password TEXT NOT NULL
-      );
-    `;
-
-  const createItemTableQuery = `
-    CREATE TABLE items (
-      id SERIAL PRIMARY KEY,
-      uid INT NOT NULL,
-      name VARCHAR(255) NOT NULL,
-      price DECIMAL(10,2) NOT NULL,
-      quantity INT NOT NULL,
-      FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
-  );`;
-
-  const tableExistsQuery = `
-    SELECT tablename, EXISTS (
-      SELECT 1 FROM pg_tables 
-      WHERE schemaname = 'public' AND tablename = ANY($1)
-    ) AS exists
-    FROM (VALUES ('users'), ('items')) AS t(tablename);
-  `;
-
   const res = await db.query(tableExistsQuery, [['users', 'items', 'orders']]);
   if (!res.rows[0].exists && !res.rows[1].exists) {
+    // check if tables exist
     db.query(createUserTableQuery)
       .then(() => {
         console.log('Users table created');
