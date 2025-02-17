@@ -79,7 +79,7 @@ app.get('/getItems/:uid', verifyJWT, async (req, res) => {
   const item = await db.query('SELECT * FROM items WHERE uid = $1', [uid]);
   if (item.rows.length === 0)
     return res.status(404).json({ message: 'No items found for this user' });
-  res.json(item.rows[0]);
+  res.json(item.rows);
 });
 
 // GET Endpoint to get a specific item by id of a user using uid
